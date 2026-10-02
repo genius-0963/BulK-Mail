@@ -10,6 +10,10 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: gmail
+    description: Connected Gmail mailbox
+  - name: campaigns
+    description: One-time personalized email campaigns
 paths:
   /healthz:
     get:
@@ -24,6 +28,78 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /gmail/profile:
+    get:
+      operationId: getGmailProfile
+      tags: [gmail]
+      summary: Get the connected Gmail profile
+      responses:
+        "200":
+          description: Connected Gmail profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GmailProfile"
+        "401":
+          description: Sign-in required
+        "403":
+          description: Signed-in account does not match connected Gmail
+        "502":
+          description: Could not verify the connected mailbox
+  /campaigns/send:
+    post:
+      operationId: sendCampaign
+      tags: [campaigns]
+      summary: Send individually personalized campaign messages
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CampaignSendInput"
+      responses:
+        "202":
+          description: Campaign accepted and queued for sending
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampaignStatus"
+        "400":
+          description: Invalid campaign or missing explicit confirmation
+        "401":
+          description: Sign-in required
+        "403":
+          description: Signed-in account does not match connected Gmail
+        "502":
+          description: Could not verify the connected mailbox
+        "409":
+          description: Campaign ID was already used for different content; matching retries return the existing status
+  /campaigns/{campaignId}:
+    get:
+      operationId: getCampaignStatus
+      tags: [campaigns]
+      summary: Get the progress and result of a campaign
+      parameters:
+        - name: campaignId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Current campaign progress and recipient results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampaignStatus"
+        "401":
+          description: Sign-in required
+        "403":
+          description: Signed-in account does not match connected Gmail
+        "404":
+          description: Campaign not found
+        "502":
+          description: Could not verify the connected mailbox
 components:
   schemas:
     HealthStatus:
@@ -33,4 +109,87 @@ components:
           type: string
       required:
         - status
+    GmailProfile:
+      type: object
+      properties:
+        emailAddress:
+          type: string
+        messagesTotal:
+          type: integer
+      required: [emailAddress, messagesTotal]
+    CampaignRecipient:
+      type: object
+      properties:
+        email:
+          type: string
+          maxLength: 254
+        name:
+          type: string
+          maxLength: 120
+        company:
+          type: string
+          maxLength: 160
+        role:
+          type: string
+          maxLength: 120
+      required: [email, name, company, role]
+    CampaignSendInput:
+      type: object
+      properties:
+        campaignId:
+          type: string
+          minLength: 1
+          maxLength: 100
+        recipients:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/CampaignRecipient"
+        subject:
+          type: string
+          minLength: 1
+          maxLength: 200
+        body:
+          type: string
+          minLength: 1
+          maxLength: 10000
+        confirmed:
+          type: boolean
+          enum: [true]
+      required: [campaignId, recipients, subject, body, confirmed]
+    CampaignRecipientStatus:
+      type: object
+      properties:
+        email:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [queued, sending, sent, failed]
+        messageId:
+          type: ["string", "null"]
+        error:
+          type: ["string", "null"]
+      required: [email, name, status, messageId, error]
+    CampaignStatus:
+      type: object
+      properties:
+        campaignId:
+          type: string
+        state:
+          type: string
+          enum: [sending, completed]
+        totalCount:
+          type: integer
+        sentCount:
+          type: integer
+        failedCount:
+          type: integer
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/CampaignRecipientStatus"
+      required: [campaignId, state, totalCount, sentCount, failedCount, results]
 

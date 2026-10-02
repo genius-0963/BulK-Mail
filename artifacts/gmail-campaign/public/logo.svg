@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 40" role="img" aria-label="Letterwell">
+  <rect width="40" height="40" rx="11" fill="#315f50"/>
+  <path d="M10 13h20v14H10z" fill="none" stroke="#f5f1e8" stroke-width="1.8" stroke-linejoin="round"/>
+  <path d="m11 14 9 7 9-7" fill="none" stroke="#f5f1e8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="50" y="28" fill="#26373e" font-family="DM Sans, sans-serif" font-size="25" font-weight="600" letter-spacing="-1.2">letterwell</text>
+  <circle cx="168" cy="25" r="2.5" fill="#789a86"/>
+</svg>
