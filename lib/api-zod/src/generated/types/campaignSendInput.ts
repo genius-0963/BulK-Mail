@@ -6,6 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 import type { CampaignRecipient } from './campaignRecipient';
+import type { ResumeAttachment } from './resumeAttachment';
 
 export interface CampaignSendInput {
   /**
@@ -29,4 +30,5 @@ export interface CampaignSendInput {
      */
   body: string;
   confirmed: true;
+  attachment?: ResumeAttachment;
 }

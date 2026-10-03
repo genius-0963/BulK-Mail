@@ -1,5 +1,11 @@
-import { createHash } from "node:crypto";
-import { Router, type IRouter, type Request } from "express";
+import { createHash, randomUUID } from "node:crypto";
+import express, {
+  Router,
+  type IRouter,
+  type NextFunction,
+  type Request,
+  type Response,
+} from "express";
 import { clerkClient, getAuth } from "@clerk/express";
 import { ReplitConnectors } from "@replit/connectors-sdk";
 import {
@@ -13,6 +19,9 @@ import {
 const router: IRouter = Router();
 type CampaignStatus = ReturnType<typeof SendCampaignResponse.parse>;
 type RecipientStatus = CampaignStatus["results"][number];
+type CampaignInput = ReturnType<typeof SendCampaignBody.parse>;
+type ResumeAttachment = NonNullable<CampaignInput["attachment"]>;
+type ResumeContentType = ResumeAttachment["contentType"];
 
 type CampaignEntry = {
   inputHash: string;
@@ -26,6 +35,13 @@ const MAX_CAMPAIGNS = 500;
 const SEND_INTERVAL_MS = 1_200;
 const SUPPORTED_MERGE_FIELDS = new Set(["name", "company", "role"]);
 const EMAIL_PATTERN = /^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$/;
+const MAX_RESUME_BYTES = 5 * 1024 * 1024;
+const RESUME_MIME_BY_EXTENSION: Record<string, ResumeContentType> = {
+  pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+};
+const campaignJsonParser = express.json({ limit: "9mb" });
 
 class GmailApiError extends Error {
   constructor(readonly status: number) {
@@ -106,6 +122,93 @@ async function verifyGmailOwner(req: Request): Promise<AccessResult> {
   }
 }
 
+async function requireGmailCampaignOwner(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const access = await verifyGmailOwner(req);
+  if (!access.ok) {
+    res.status(access.status).json({ error: access.error });
+    return;
+  }
+  next();
+}
+
+function parseCampaignJson(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  campaignJsonParser(req, res, (error?: Error): void => {
+    if (!error) {
+      next();
+      return;
+    }
+
+    const status =
+      "status" in error && typeof error.status === "number"
+        ? error.status
+        : 400;
+    res.status(status === 413 ? 413 : 400).json({
+      error:
+        status === 413
+          ? "Campaign request is too large. Resume files must be 5 MB or smaller."
+          : "Campaign request must contain valid JSON.",
+    });
+  });
+}
+
+function validateResumeAttachment(
+  attachment: ResumeAttachment | undefined,
+): { attachment?: ResumeAttachment; error?: string } {
+  if (!attachment) return {};
+
+  const filename = attachment.filename.trim();
+  if (
+    !filename ||
+    /[\\/\u0000-\u001f\u007f]/.test(filename) ||
+    filename.length > 120
+  ) {
+    return { error: "Choose a resume with a valid filename." };
+  }
+
+  const extension = filename.split(".").pop()?.toLowerCase() ?? "";
+  const expectedContentType = RESUME_MIME_BY_EXTENSION[extension];
+  if (!expectedContentType || attachment.contentType !== expectedContentType) {
+    return { error: "Resume attachments must be PDF, DOC, or DOCX files." };
+  }
+
+  const bytes = Buffer.from(attachment.contentBase64, "base64");
+  if (
+    bytes.length === 0 ||
+    bytes.length > MAX_RESUME_BYTES ||
+    bytes.toString("base64") !== attachment.contentBase64
+  ) {
+    return { error: "The resume is empty, too large, or invalid." };
+  }
+
+  const hasExpectedSignature =
+    expectedContentType === "application/pdf"
+      ? bytes.subarray(0, 1024).includes(Buffer.from("%PDF-"))
+      : expectedContentType === "application/msword"
+        ? bytes.subarray(0, 8).equals(
+            Buffer.from("D0CF11E0A1B11AE1", "hex"),
+          )
+        : bytes.subarray(0, 4).equals(Buffer.from("504b0304", "hex"));
+  if (!hasExpectedSignature) {
+    return { error: "The selected file does not match its resume file type." };
+  }
+
+  return {
+    attachment: {
+      ...attachment,
+      filename: filename.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120),
+      contentBase64: bytes.toString("base64"),
+    },
+  };
+}
+
 function renderTemplate(
   template: string,
   recipient: { name: string; company: string; role: string },
@@ -132,18 +235,46 @@ function buildRawMessage(
   email: string,
   subject: string,
   body: string,
+  attachment?: ResumeAttachment,
 ): string {
   const encodedSubject = Buffer.from(subject, "utf8").toString("base64");
   const encodedBody = wrapBase64(Buffer.from(body, "utf8").toString("base64"));
-  const message = [
+  const headers = [
     `To: ${email}`,
     `Subject: =?UTF-8?B?${encodedSubject}?=`,
     "MIME-Version: 1.0",
-    'Content-Type: text/plain; charset="UTF-8"',
-    "Content-Transfer-Encoding: base64",
-    "",
-    encodedBody,
-  ].join("\r\n");
+  ];
+  let message: string;
+
+  if (!attachment) {
+    message = [
+      ...headers,
+      'Content-Type: text/plain; charset="UTF-8"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      encodedBody,
+    ].join("\r\n");
+  } else {
+    const boundary = `letterwell_${randomUUID()}`;
+    message = [
+      ...headers,
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      "",
+      `--${boundary}`,
+      'Content-Type: text/plain; charset="UTF-8"',
+      "Content-Transfer-Encoding: base64",
+      "",
+      encodedBody,
+      `--${boundary}`,
+      `Content-Type: ${attachment.contentType}; name="${attachment.filename}"`,
+      `Content-Disposition: attachment; filename="${attachment.filename}"`,
+      "Content-Transfer-Encoding: base64",
+      "",
+      wrapBase64(attachment.contentBase64),
+      `--${boundary}--`,
+      "",
+    ].join("\r\n");
+  }
 
   return Buffer.from(message, "utf8").toString("base64url");
 }
@@ -196,8 +327,13 @@ function getCampaignStatus(entry: CampaignEntry): CampaignStatus {
 
 async function runCampaign(
   entry: CampaignEntry,
-  prepared: Array<{ result: RecipientStatus; raw: string }>,
+  prepared: Array<{
+    result: RecipientStatus;
+    subject: string;
+    body: string;
+  }>,
   req: Request,
+  attachment?: ResumeAttachment,
 ): Promise<void> {
   for (let index = 0; index < prepared.length; index += 1) {
     const current = prepared[index];
@@ -207,7 +343,13 @@ async function runCampaign(
     current.result.error = null;
 
     try {
-      current.result.messageId = await sendOne(current.result, current.raw);
+      const raw = buildRawMessage(
+        current.result.email,
+        current.subject,
+        current.body,
+        attachment,
+      );
+      current.result.messageId = await sendOne(current.result, raw);
       current.result.status = "sent";
       entry.status.sentCount += 1;
     } catch (error) {
@@ -244,13 +386,11 @@ router.get("/gmail/profile", async (req, res): Promise<void> => {
   res.json(GetGmailProfileResponse.parse(access.profile));
 });
 
-router.post("/campaigns/send", async (req, res): Promise<void> => {
-  const access = await verifyGmailOwner(req);
-  if (!access.ok) {
-    res.status(access.status).json({ error: access.error });
-    return;
-  }
-
+router.post(
+  "/campaigns/send",
+  requireGmailCampaignOwner,
+  parseCampaignJson,
+  async (req, res): Promise<void> => {
   const parsed = SendCampaignBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Check the campaign fields and recipient list." });
@@ -258,6 +398,12 @@ router.post("/campaigns/send", async (req, res): Promise<void> => {
   }
 
   const input = parsed.data;
+  const validatedAttachment = validateResumeAttachment(input.attachment);
+  if (validatedAttachment.error) {
+    res.status(400).json({ error: validatedAttachment.error });
+    return;
+  }
+  const attachment = validatedAttachment.attachment;
   const campaignId = input.campaignId.trim();
   if (
     !campaignId ||
@@ -273,7 +419,11 @@ router.post("/campaigns/send", async (req, res): Promise<void> => {
   }
 
   const seenEmails = new Set<string>();
-  const prepared: Array<{ result: RecipientStatus; raw: string }> = [];
+  const prepared: Array<{
+    result: RecipientStatus;
+    subject: string;
+    body: string;
+  }> = [];
 
   for (const recipient of input.recipients) {
     const email = recipient.email.trim();
@@ -322,7 +472,8 @@ router.post("/campaigns/send", async (req, res): Promise<void> => {
     };
     prepared.push({
       result,
-      raw: buildRawMessage(email, mergedSubject, mergedBody),
+      subject: mergedSubject,
+      body: mergedBody,
     });
   }
 
@@ -332,6 +483,7 @@ router.post("/campaigns/send", async (req, res): Promise<void> => {
         recipients: input.recipients,
         subject: input.subject,
         body: input.body,
+        attachment: attachment ?? null,
       }),
     )
     .digest("hex");
@@ -363,7 +515,7 @@ router.post("/campaigns/send", async (req, res): Promise<void> => {
     { campaignId, recipientCount: prepared.length },
     "Accepted confirmed Gmail campaign",
   );
-  void runCampaign(entry, prepared, req).catch(() => {
+  void runCampaign(entry, prepared, req, attachment).catch(() => {
     req.log.error({ campaignId }, "Gmail campaign worker stopped unexpectedly");
     entry.status.state = "completed";
     for (const recipient of entry.status.results) {
@@ -376,7 +528,8 @@ router.post("/campaigns/send", async (req, res): Promise<void> => {
   });
 
   res.status(202).json(getCampaignStatus(entry));
-});
+  },
+);
 
 router.get("/campaigns/:campaignId", async (req, res): Promise<void> => {
   const access = await verifyGmailOwner(req);

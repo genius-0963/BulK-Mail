@@ -45,6 +45,10 @@ export const sendCampaignBodySubjectMax = 200;
 
 export const sendCampaignBodyBodyMax = 10000;
 
+export const sendCampaignBodyAttachmentFilenameMax = 120;
+
+export const sendCampaignBodyAttachmentContentBase64Max = 6990508;
+
 
 
 export const SendCampaignBody = zod.object({
@@ -57,7 +61,12 @@ export const SendCampaignBody = zod.object({
 })).min(1).max(sendCampaignBodyRecipientsMax),
   "subject": zod.string().min(1).max(sendCampaignBodySubjectMax),
   "body": zod.string().min(1).max(sendCampaignBodyBodyMax),
-  "confirmed": zod.literal(true)
+  "confirmed": zod.literal(true),
+  "attachment": zod.object({
+  "filename": zod.string().min(1).max(sendCampaignBodyAttachmentFilenameMax),
+  "contentType": zod.enum(['application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document']),
+  "contentBase64": zod.string().min(1).max(sendCampaignBodyAttachmentContentBase64Max)
+}).optional()
 })
 
 export const SendCampaignResponse = zod.object({

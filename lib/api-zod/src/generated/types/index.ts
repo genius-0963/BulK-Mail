@@ -14,3 +14,5 @@ export * from './campaignStatus';
 export * from './campaignStatusState';
 export * from './gmailProfile';
 export * from './healthStatus';
+export * from './resumeAttachment';
+export * from './resumeAttachmentContentType';

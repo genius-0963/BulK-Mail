@@ -133,6 +133,24 @@ components:
           type: string
           maxLength: 120
       required: [email, name, company, role]
+    ResumeAttachment:
+      type: object
+      properties:
+        filename:
+          type: string
+          minLength: 1
+          maxLength: 120
+        contentType:
+          type: string
+          enum:
+            - application/pdf
+            - application/msword
+            - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+        contentBase64:
+          type: string
+          minLength: 1
+          maxLength: 6990508
+      required: [filename, contentType, contentBase64]
     CampaignSendInput:
       type: object
       properties:
@@ -157,6 +175,8 @@ components:
         confirmed:
           type: boolean
           enum: [true]
+        attachment:
+          $ref: "#/components/schemas/ResumeAttachment"
       required: [campaignId, recipients, subject, body, confirmed]
     CampaignRecipientStatus:
       type: object

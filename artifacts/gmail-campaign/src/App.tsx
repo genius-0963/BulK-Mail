@@ -4,8 +4,8 @@ import { publishableKeyFromHost } from '@clerk/react/internal';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowRight, CheckCircle2, ChevronDown, CircleAlert,
-  FileSpreadsheet, LoaderCircle, Mail, Plus, Send, ShieldCheck,
-  Trash2, Upload, X,
+  FileSpreadsheet, FileText, LoaderCircle, Mail, Paperclip, Plus, Send,
+  ShieldCheck, Trash2, Upload, X,
 } from 'lucide-react';
 import { Link, Route, Router as WouterRouter, Switch, useLocation } from 'wouter';
 import {
@@ -96,6 +96,36 @@ const findUnsupportedTokens = (...texts: string[]) => {
   return [...found];
 };
 const validEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+const MAX_RESUME_SIZE_BYTES = 5 * 1024 * 1024;
+type ResumeAttachment = NonNullable<CampaignSendInput['attachment']>;
+const resumeMimeByExtension: Record<string, ResumeAttachment['contentType']> = {
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+const fileSizeLabel = (bytes: number) => bytes >= 1024 * 1024
+  ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+function readFileBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('The resume file could not be read.'));
+    reader.onabort = () => reject(new Error('Reading the resume was cancelled.'));
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        reject(new Error('The resume file could not be read.'));
+        return;
+      }
+      const separator = reader.result.indexOf(',');
+      if (separator < 0) {
+        reject(new Error('The resume file could not be encoded.'));
+        return;
+      }
+      resolve(reader.result.slice(separator + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 function Wordmark({ light = false }: { light?: boolean }) {
   return <span className={`inline-flex items-center gap-2.5 font-semibold tracking-[-.04em] ${light ? 'text-[#f5f1e8]' : 'text-[#26373e]'}`}>
@@ -188,9 +218,14 @@ function CampaignPage() {
   const [selectedId, setSelectedId] = useState('');
   const [confirmed, setConfirmed] = useState(false);
   const [csvError, setCsvError] = useState('');
+  const [resumeFile, setResumeFile] = useState<File | null>(null);
+  const [resumeError, setResumeError] = useState('');
+  const [sendError, setSendError] = useState('');
+  const [preparingAttachment, setPreparingAttachment] = useState(false);
   const [activeCampaignId, setActiveCampaignId] = useState<string | null>(null);
   const [initialStatus, setInitialStatus] = useState<CampaignStatus | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const resumeRef = useRef<HTMLInputElement>(null);
   const campaignRequestRef = useRef<CampaignSendInput | null>(null);
   const campaignStatusQuery = useGetCampaignStatus(activeCampaignId ?? '', {
     query: {
@@ -201,7 +236,7 @@ function CampaignPage() {
   });
   const campaignStatus = campaignStatusQuery.data ?? initialStatus;
   const sendingInProgress = campaignStatus?.state === 'sending';
-  const formLocked = sendCampaign.isPending || sendingInProgress;
+  const formLocked = sendCampaign.isPending || sendingInProgress || preparingAttachment;
   const uncertainAttempt = sendCampaign.isError && campaignRequestRef.current !== null;
   const compositionLocked = formLocked || uncertainAttempt;
   useEffect(() => { if (isLoaded && !isSignedIn) setLocation('/sign-in'); }, [isLoaded, isSignedIn, setLocation]);
@@ -243,7 +278,8 @@ function CampaignPage() {
   const previewBodyLength = activeRecipient ? interpolate(body.trim(), activeRecipient).length : body.trim().length;
   const canSend = recipients.length > 0 && recipients.length <= 100 && !errors.length &&
     subject.trim().length > 0 && subject.length <= 200 && body.trim().length > 0 &&
-    body.length <= 10000 && unsupportedTokens.length === 0 && confirmed && !!profile.data && !formLocked && !uncertainAttempt &&
+    body.length <= 10000 && unsupportedTokens.length === 0 && !resumeError && !sendError &&
+    confirmed && !!profile.data && !formLocked && !uncertainAttempt &&
     campaignStatus?.state !== 'completed';
   const canRetrySameCampaign = uncertainAttempt && confirmed && !formLocked;
   const completedCount = (campaignStatus?.sentCount ?? 0) + (campaignStatus?.failedCount ?? 0);
@@ -255,7 +291,31 @@ function CampaignPage() {
       setActiveCampaignId(null);
       setInitialStatus(null);
     }
+    setSendError('');
     setConfirmed(false);
+  };
+  const selectResume = (file?: File) => {
+    if (resumeRef.current) resumeRef.current.value = '';
+    if (!file) return;
+    const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+    const error = !resumeMimeByExtension[extension]
+      ? 'Choose a PDF, DOC, or DOCX resume.'
+      : file.size === 0
+        ? 'The resume file is empty.'
+        : file.size > MAX_RESUME_SIZE_BYTES
+          ? 'Resume files must be 5 MB or smaller.'
+          : file.name.length > 120 || /[\\/\u0000-\u001f\u007f]/.test(file.name)
+            ? 'Choose a resume with a valid filename.'
+            : '';
+    setResumeFile(error ? null : file);
+    setResumeError(error);
+    resetCompletedCampaign();
+  };
+  const clearResume = () => {
+    setResumeFile(null);
+    setResumeError('');
+    if (resumeRef.current) resumeRef.current.value = '';
+    resetCompletedCampaign();
   };
   const patchRecipient = (id: string, key: keyof CampaignRecipient, value: string) => {
     setRecipients((items) => items.map((item) => item.localId === id ? { ...item, [key]: value } : item));
@@ -302,16 +362,35 @@ function CampaignPage() {
     resetCompletedCampaign();
   };
   const sendStoredRequest = (request: CampaignSendInput) => {
+    setSendError('');
     sendCampaign.mutate({ data: request }, {
       onSuccess: (status) => {
         campaignRequestRef.current = null;
         setInitialStatus(status);
         setActiveCampaignId(status.campaignId);
       },
-      onError: () => setConfirmed(false),
+      onError: (error) => {
+        setConfirmed(false);
+        const failure = error as { status?: number; data?: unknown };
+        const definiteRejection =
+          typeof failure.status === 'number' &&
+          failure.status >= 400 &&
+          failure.status < 500 &&
+          failure.status !== 408 &&
+          failure.status !== 429;
+        if (definiteRejection) {
+          campaignRequestRef.current = null;
+          const response = failure.data as { error?: unknown } | undefined;
+          setSendError(
+            typeof response?.error === 'string'
+              ? response.error
+              : 'The campaign request was rejected before sending.',
+          );
+        }
+      },
     });
   };
-  const submit = () => {
+  const submit = async () => {
     if (!confirmed || formLocked) return;
     if (uncertainAttempt) {
       const storedRequest = campaignRequestRef.current;
@@ -319,15 +398,34 @@ function CampaignPage() {
       return;
     }
     if (!canSend) return;
-    const request: CampaignSendInput = {
+    if (resumeFile) setPreparingAttachment(true);
+    try {
+      const extension = resumeFile?.name.split('.').pop()?.toLowerCase() ?? '';
+      const contentType = resumeFile ? resumeMimeByExtension[extension] : undefined;
+      if (resumeFile && !contentType) throw new Error('Choose a PDF, DOC, or DOCX resume.');
+      const attachment = resumeFile && contentType
+        ? {
+            filename: resumeFile.name,
+            contentType,
+            contentBase64: await readFileBase64(resumeFile),
+          }
+        : undefined;
+      const request: CampaignSendInput = {
         campaignId: crypto.randomUUID(),
         recipients: recipientsWithoutIds,
         subject: subject.trim(),
         body: body.trim(),
         confirmed: true,
-    };
-    campaignRequestRef.current = request;
-    sendStoredRequest(request);
+        ...(attachment ? { attachment } : {}),
+      };
+      campaignRequestRef.current = request;
+      sendStoredRequest(request);
+    } catch (error) {
+      setConfirmed(false);
+      setResumeError(error instanceof Error ? error.message : 'The resume could not be attached.');
+    } finally {
+      setPreparingAttachment(false);
+    }
   };
   const startDifferentBatch = () => {
     const approved = window.confirm(
@@ -400,6 +498,24 @@ function CampaignPage() {
             <label className="mt-4 block"><span className="mb-1.5 flex items-center justify-between text-xs font-semibold text-[#5b696a]"><span>Message</span><span className={`font-mono text-[10px] ${body.length > 10000 ? 'text-[#a5443a]' : 'text-[#a1a49d]'}`}>{body.length}/10,000</span></span><textarea disabled={compositionLocked} value={body} onChange={(e) => { setBody(e.target.value); resetCompletedCampaign(); }} maxLength={10500} rows={9} placeholder={'Hi {{name}},\n\nI’ve been following what you’re doing at {{company}} and thought I’d reach out.\n\nWould a quick conversation be useful?\n\nWarmly,\nYour name'} className="w-full resize-y rounded-lg border border-[#dedbd1] bg-[#fcfbf7] px-3.5 py-3 text-sm leading-6 outline-none transition placeholder:text-[#a0a69f] focus:border-[#86a992] focus:ring-2 focus:ring-[#dce9dc] disabled:opacity-70" data-testid="input-body" /></label>
             {body.length > 10000 && <p className="mt-1 text-[11px] text-[#a34b40]">Keep the message to 10,000 characters or fewer.</p>}
             <div className="mt-3 flex flex-wrap items-center gap-2"><span className="text-[10px] font-semibold uppercase tracking-wider text-[#919a92]">Personalize with</span>{['{{name}}', '{{company}}', '{{role}}'].map((token) => <button disabled={compositionLocked} key={token} type="button" onClick={() => { setBody((value) => `${value}${value && !value.endsWith(' ') && !value.endsWith('\n') ? ' ' : ''}${token}`); resetCompletedCampaign(); }} className="rounded-md border border-[#d9e2d8] bg-[#f3f7f2] px-2 py-1 font-mono text-[10px] text-[#436b55] hover:bg-[#e9f0e8] disabled:opacity-45" data-testid={`button-token-${token.slice(2, -2)}`}>{token}</button>)}</div>
+            <div className="mt-5 rounded-xl border border-[#e8e3d8] bg-[#faf9f4] p-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#e9efe7] text-[#53745e]"><Paperclip size={15} /></span>
+                  <div><p className="text-xs font-semibold text-[#53615e]">Resume attachment <span className="font-normal text-[#929a92]">· Optional</span></p><p className="mt-0.5 text-[10px] leading-4 text-[#89928b]">PDF, DOC, or DOCX · up to 5 MB · sent with every email</p></div>
+                </div>
+                <input ref={resumeRef} type="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={compositionLocked} onChange={(event) => selectResume(event.currentTarget.files?.[0])} className="sr-only" data-testid="input-resume-attachment" />
+                {resumeFile
+                  ? <div className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-[#e3e7dc] bg-white px-2.5 py-2">
+                      <FileText size={14} className="shrink-0 text-[#68816b]" />
+                      <span className="max-w-[190px] truncate text-[11px] font-medium text-[#53615e]" title={resumeFile.name}>{resumeFile.name}</span>
+                      <span className="shrink-0 font-mono text-[9px] text-[#929a92]">{fileSizeLabel(resumeFile.size)}</span>
+                      <button type="button" onClick={clearResume} disabled={compositionLocked} className="ml-1 text-[10px] font-semibold text-[#8e5c51] underline underline-offset-2 disabled:opacity-40" data-testid="button-remove-resume">Remove</button>
+                    </div>
+                  : <button type="button" onClick={() => resumeRef.current?.click()} disabled={compositionLocked} className="rounded-lg border border-[#d7ddd2] bg-white px-3 py-2 text-[11px] font-semibold text-[#52635e] transition hover:bg-[#f3f6f1] disabled:opacity-45" data-testid="button-choose-resume">Choose resume</button>}
+              </div>
+              {resumeError && <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border border-[#ecd2c8] bg-[#fbf0ec] px-3 py-2 text-[11px] leading-4 text-[#994a3f]" role="alert" data-testid="alert-resume-error"><span>{resumeError}</span><button type="button" onClick={() => setResumeError('')} aria-label="Dismiss resume error"><X size={14} /></button></div>}
+            </div>
           </section>
         </div>
         <div className="space-y-5 xl:sticky xl:top-[88px]">
@@ -415,6 +531,7 @@ function CampaignPage() {
                   <div className="mt-3 flex gap-3"><span className="w-12 text-[#9aa19a]">Subject</span><span className="font-medium text-[#394b4f]">{interpolate(subject.trim() || 'Your subject line', activeRecipient)}</span></div>
                 </div>
                 <div className="min-h-[250px] whitespace-pre-wrap px-5 py-5 text-[13px] leading-6 text-[#526265]">{interpolate(body.trim() || 'Your message will appear here as you write.', activeRecipient)}</div>
+                {resumeFile && <div className="flex flex-wrap items-center gap-2 border-t border-[#eeeae2] bg-[#faf9f5] px-5 py-3 text-[11px]" data-testid="preview-resume-attachment"><Paperclip size={14} className="shrink-0 text-[#68816b]" /><span className="font-medium text-[#53615e]">Resume attached</span><span className="max-w-[190px] truncate text-[#7f8b83]" title={resumeFile.name}>{resumeFile.name}</span><span className="text-[10px] text-[#929a92]">· included with each email</span></div>}
                 <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#eeeae2] bg-[#faf9f5] px-5 py-3"><span className="flex items-center gap-1.5 text-[10px] text-[#87928c]"><CheckCircle2 size={13} className="text-[#6a9975]" />Individual message preview</span><span className="font-mono text-[9px] text-[#8f9991]">Subject {previewSubjectLength}/200 · Message {previewBodyLength}/10,000</span><span className="font-mono text-[9px] uppercase tracking-wider text-[#a0a59e]">{Math.max(recipients.findIndex((r) => r.localId === activeRecipient.localId) + 1, 1)} / {recipients.length}</span></div>
               </div>
               {(previewSubjectLength > 200 || previewBodyLength > 10000) && <p className="mt-3 flex items-start gap-1.5 text-xs leading-5 text-[#a34b40]"><CircleAlert size={14} className="mt-0.5 shrink-0" />This personalized message exceeds {previewSubjectLength > 200 ? 'the 200-character subject limit' : ''}{previewSubjectLength > 200 && previewBodyLength > 10000 ? ' and ' : ''}{previewBodyLength > 10000 ? 'the 10,000-character body limit' : ''}. Shorten the template or recipient details.</p>}
@@ -422,20 +539,21 @@ function CampaignPage() {
             </div> : <div className="grid min-h-[325px] place-items-center px-6 text-center"><div><span className="mx-auto grid size-11 place-items-center rounded-xl bg-[#dce8dd] text-[#577760]"><Mail size={19} /></span><p className="mt-3 text-sm font-semibold">Your preview will live here</p><p className="mt-1 max-w-[240px] text-xs leading-5 text-[#879189]">Add a recipient and a message to see the finished note.</p></div></div>}
           </section>
           <section className="rounded-2xl border border-[#e5dfd4] bg-[#fffdf8] p-5 sm:p-6">
-            <div className="flex items-start gap-3"><span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#f3ede0] text-[#9b7645]"><ShieldCheck size={17} /></span><div><h2 className="text-sm font-semibold">A deliberate final check</h2><p className="mt-1 text-xs leading-5 text-[#788580]">Each email is sent individually from your Gmail. Nothing goes out until you approve this batch.</p></div></div>
+            <div className="flex items-start gap-3"><span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#f3ede0] text-[#9b7645]"><ShieldCheck size={17} /></span><div><h2 className="text-sm font-semibold">A deliberate final check</h2><p className="mt-1 text-xs leading-5 text-[#788580]">Each email is sent individually from your Gmail{resumeFile ? ' with the same resume attached' : ''}. Nothing goes out until you approve this batch.</p></div></div>
             <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-[#e7e3d9] bg-[#faf9f4] p-3.5 transition hover:border-[#c6d5c7]">
               <input type="checkbox" disabled={formLocked} checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} className="mt-0.5 size-4 accent-[#315f50] disabled:opacity-50" data-testid="checkbox-confirm-send" />
-              <span className="text-xs leading-5 text-[#52615e]">I have reviewed the recipient list and message previews. I approve sending {recipients.length || 'this'} individual {recipients.length === 1 ? 'email' : 'emails'} from my Gmail account.</span>
+              <span className="text-xs leading-5 text-[#52615e]">I have reviewed the recipient list, message previews{resumeFile ? ' and the attached resume' : ''}. I approve sending {recipients.length || 'this'} individual {recipients.length === 1 ? 'email' : 'emails'} from my Gmail account.</span>
             </label>
             {errors.length > 0 && <p className="mt-3 flex items-center gap-1.5 text-xs text-[#a34b40]"><CircleAlert size={14} />{errors.length} recipient detail{errors.length === 1 ? '' : 's'} need attention.</p>}
+            {sendError && <div className="mt-3 flex items-start justify-between gap-3 rounded-xl border border-[#ecd2c8] bg-[#fbf0ec] px-3.5 py-3 text-xs leading-5 text-[#994a3f]" role="alert" data-testid="alert-campaign-request-error"><span>{sendError}</span><button type="button" onClick={() => setSendError('')} aria-label="Dismiss send error"><X size={14} /></button></div>}
             {unsupportedTokens.length > 0 && <p className="mt-3 flex items-start gap-1.5 text-xs leading-5 text-[#a34b40]" role="alert"><CircleAlert size={14} className="mt-0.5 shrink-0" /><span>Unsupported merge tag{unsupportedTokens.length > 1 ? 's' : ''}: <span className="font-mono">{unsupportedTokens.join(', ')}</span>. Use only {'{{name}}'}, {'{{company}}'}, or {'{{role}}'}.</span></p>}
             {uncertainAttempt && <div className="mt-3 rounded-xl border border-[#e8c9bb] bg-[#fbf1eb] p-3.5 text-xs leading-5 text-[#88483d]" role="alert" data-testid="alert-uncertain-send">
               <p className="font-semibold">We couldn’t confirm the send response.</p>
               <p className="mt-1">The approved request is retained with the same campaign ID and exact payload. Retry it safely, or check Gmail Sent before starting a different batch.</p>
               <button type="button" onClick={startDifferentBatch} className="mt-2 font-semibold underline underline-offset-2" data-testid="button-start-different-batch">Start a different batch…</button>
             </div>}
-            <button onClick={submit} disabled={uncertainAttempt ? !canRetrySameCampaign : !canSend} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-[#315f50] px-4 py-3.5 text-sm font-semibold text-[#fffdf8] shadow-[0_5px_16px_rgba(49,95,80,.16)] transition hover:bg-[#254b3f] disabled:cursor-not-allowed disabled:bg-[#aeb9af] disabled:shadow-none" data-testid="button-send-campaign">
-              {sendCampaign.isPending ? <><LoaderCircle size={17} className="animate-spin" />Starting your approved batch…</> : sendingInProgress ? <><LoaderCircle size={17} className="animate-spin" />Batch sending · {campaignStatus?.sentCount ?? 0} of {campaignStatus?.totalCount ?? recipients.length} sent</> : uncertainAttempt ? <><Send size={16} />Retry same approved batch</> : campaignStatus?.state === 'completed' ? <><CheckCircle2 size={16} />Batch complete · edit to start another</> : <><Send size={16} />Approve & send {recipients.length || ''} {recipients.length === 1 ? 'email' : 'emails'}</>}
+            <button onClick={submit} disabled={preparingAttachment || (uncertainAttempt ? !canRetrySameCampaign : !canSend)} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-[#315f50] px-4 py-3.5 text-sm font-semibold text-[#fffdf8] shadow-[0_5px_16px_rgba(49,95,80,.16)] transition hover:bg-[#254b3f] disabled:cursor-not-allowed disabled:bg-[#aeb9af] disabled:shadow-none" data-testid="button-send-campaign">
+              {preparingAttachment ? <><LoaderCircle size={17} className="animate-spin" />Preparing resume…</> : sendCampaign.isPending ? <><LoaderCircle size={17} className="animate-spin" />Starting your approved batch…</> : sendingInProgress ? <><LoaderCircle size={17} className="animate-spin" />Batch sending · {campaignStatus?.sentCount ?? 0} of {campaignStatus?.totalCount ?? recipients.length} sent</> : uncertainAttempt ? <><Send size={16} />Retry same approved batch</> : campaignStatus?.state === 'completed' ? <><CheckCircle2 size={16} />Batch complete · edit to start another</> : <><Send size={16} />Approve & send {recipients.length || ''} {recipients.length === 1 ? 'email' : 'emails'}</>}
             </button>
             <p className="mt-2 text-center text-[10px] leading-4 text-[#939b94]">Each recipient receives a separate message. No CC or BCC.</p>
           </section>

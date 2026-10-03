@@ -25,6 +25,29 @@ export interface CampaignRecipient {
   role: string;
 }
 
+export type ResumeAttachmentContentType = typeof ResumeAttachmentContentType[keyof typeof ResumeAttachmentContentType];
+
+
+export const ResumeAttachmentContentType = {
+  'application/pdf': 'application/pdf',
+  'application/msword': 'application/msword',
+  'application/vndopenxmlformats-officedocumentwordprocessingmldocument': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+} as const;
+
+export interface ResumeAttachment {
+  /**
+     * @minLength 1
+     * @maxLength 120
+     */
+  filename: string;
+  contentType: ResumeAttachmentContentType;
+  /**
+     * @minLength 1
+     * @maxLength 6990508
+     */
+  contentBase64: string;
+}
+
 export interface CampaignSendInput {
   /**
      * @minLength 1
@@ -47,6 +70,7 @@ export interface CampaignSendInput {
      */
   body: string;
   confirmed: true;
+  attachment?: ResumeAttachment;
 }
 
 export type CampaignRecipientStatusStatus = typeof CampaignRecipientStatusStatus[keyof typeof CampaignRecipientStatusStatus];

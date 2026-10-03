@@ -35,7 +35,16 @@ app.use(
 // The Clerk proxy must run before body parsers so it can forward raw requests.
 app.use(CLERK_PROXY_PATH, clerkProxyMiddleware());
 
-app.use(express.json());
+const defaultJsonParser = express.json();
+app.use((req, res, next) => {
+  // The campaign route parses its larger, attachment-capable JSON body only
+  // after checking the sender's identity.
+  if (req.method === "POST" && req.path === "/api/campaigns/send") {
+    next();
+    return;
+  }
+  defaultJsonParser(req, res, next);
+});
 app.use(express.urlencoded({ extended: true }));
 
 app.use(
