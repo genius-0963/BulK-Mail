@@ -27,6 +27,7 @@ export const GetGmailProfileResponse = zod.object({
 
 
 /**
+ * Repeating the same campaign request returns its current status while sending and resumes queued recipients if the campaign is paused by a Gmail rate limit.
  * @summary Send individually personalized campaign messages
  */
 export const sendCampaignBodyCampaignIdMax = 100;
@@ -71,7 +72,7 @@ export const SendCampaignBody = zod.object({
 
 export const SendCampaignResponse = zod.object({
   "campaignId": zod.string(),
-  "state": zod.enum(['sending', 'completed']),
+  "state": zod.enum(['sending', 'paused', 'completed']),
   "totalCount": zod.number().int(),
   "sentCount": zod.number().int(),
   "failedCount": zod.number().int(),
@@ -94,7 +95,7 @@ export const GetCampaignStatusParams = zod.object({
 
 export const GetCampaignStatusResponse = zod.object({
   "campaignId": zod.string(),
-  "state": zod.enum(['sending', 'completed']),
+  "state": zod.enum(['sending', 'paused', 'completed']),
   "totalCount": zod.number().int(),
   "sentCount": zod.number().int(),
   "failedCount": zod.number().int(),

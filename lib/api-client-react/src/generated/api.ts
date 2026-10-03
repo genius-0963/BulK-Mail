@@ -217,6 +217,7 @@ export const getSendCampaignUrl = () => {
 }
 
 /**
+ * Repeating the same campaign request returns its current status while sending and resumes queued recipients if the campaign is paused by a Gmail rate limit.
  * @summary Send individually personalized campaign messages
  */
 export const sendCampaign = async (campaignSendInput: CampaignSendInput, options?: Parameters<typeof customFetch>[1]): Promise<CampaignStatus> => {

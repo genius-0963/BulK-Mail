@@ -11,5 +11,6 @@ export type CampaignStatusState = typeof CampaignStatusState[keyof typeof Campai
 
 export const CampaignStatusState = {
   sending: 'sending',
+  paused: 'paused',
   completed: 'completed',
 } as const;

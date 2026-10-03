@@ -51,6 +51,7 @@ paths:
       operationId: sendCampaign
       tags: [campaigns]
       summary: Send individually personalized campaign messages
+      description: Repeating the same campaign request returns its current status while sending and resumes queued recipients if the campaign is paused by a Gmail rate limit.
       requestBody:
         required: true
         content:
@@ -200,7 +201,7 @@ components:
           type: string
         state:
           type: string
-          enum: [sending, completed]
+          enum: [sending, paused, completed]
         totalCount:
           type: integer
         sentCount:
