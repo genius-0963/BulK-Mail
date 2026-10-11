@@ -1,1 +1,0 @@
-- [Gmail campaign safety](gmail-campaign-safety.md) — One-recipient messages, explicit batch approval, and conservative ambiguous-send handling are product invariants.
