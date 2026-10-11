@@ -1,4 +1,6 @@
 import express, { type Express } from "express";
+import cors from "cors";
+import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
 import { clerkMiddleware } from "@clerk/express";
 import { publishableKeyFromHost } from "@clerk/shared/keys";
@@ -11,6 +13,15 @@ import {
 } from "./middlewares/clerkProxyMiddleware";
 
 const app: Express = express();
+
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+  }),
+);
+
+app.use(cookieParser());
 
 app.use(
   pinoHttp({
@@ -47,14 +58,19 @@ app.use((req, res, next) => {
 });
 app.use(express.urlencoded({ extended: true }));
 
-app.use(
-  clerkMiddleware((req) => ({
-    publishableKey: publishableKeyFromHost(
-      getClerkProxyHost(req) ?? "",
-      process.env.CLERK_PUBLISHABLE_KEY,
-    ),
-  })),
-);
+if (process.env.CLERK_PUBLISHABLE_KEY) {
+  app.use(
+    clerkMiddleware((req) => ({
+      publishableKey: publishableKeyFromHost(
+        getClerkProxyHost(req) ?? "",
+        process.env.CLERK_PUBLISHABLE_KEY,
+      ),
+    })),
+  );
+} else {
+  // Fallback no-op clerkMiddleware if keys are not yet configured during local bootstrapping
+  app.use(clerkMiddleware());
+}
 
 app.use("/api", router);
 
