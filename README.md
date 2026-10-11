@@ -9,7 +9,8 @@
 [![Docker](https://img.shields.io/badge/Docker-Supported-2496ed.svg)](https://www.docker.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A production-grade, full-stack email campaign and cold outreach application that delivers personalized bulk emails directly through your authenticated Gmail account using the official Google Workspace APIs. Built with a modern TypeScript monorepo architecture, end-to-end type safety, PostgreSQL persistence, and Clerk authentication.
+A full-stack email campaign and cold outreach application that delivers personalized bulk emails directly through your authenticated Gmail account using the official Google Workspace APIs.
+Built with a modern TypeScript monorepo architecture, end-to-end type safety, PostgreSQL persistence, and Clerk authentication.
 
 ---
 
